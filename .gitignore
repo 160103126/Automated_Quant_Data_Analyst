@@ -1,1 +1,41 @@
-.venv
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Application runtime output
+reports/
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+build*.log
+
+# Docker/local packaging artifacts
+.docker-build/
+dist/
+build/
+*.egg-info/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
