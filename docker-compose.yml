@@ -1,0 +1,19 @@
+services:
+  market-analyst-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-analyst-app
+    ports:
+      - "8080:8080"
+    environment:
+      MCP_GATEWAY_URL: ${MCP_GATEWAY_URL:-http://host.docker.internal:8000}
+      REPORT_DIRECTORY: ${REPORT_DIRECTORY:-/data/fs/reports}
+      REPORT_TIMEZONE: ${REPORT_TIMEZONE:-Asia/Calcutta}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
