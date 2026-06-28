@@ -1,0 +1,86 @@
+curl --location --request POST 'http://localhost:8085/reports/daily' \
+--header 'accept: application/json' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "tickers": [
+    "TCS.NS"
+  ],
+  "history_period": "1y",
+  "trend_period": "3mo",
+  "interval": "1d",
+  "persist": true,
+  "save_report": true
+}'
+
+
+response:
+{
+    "report_path": "data/fs/reports/2026-06-28-Market-Analysis.md",
+    "markdown": "**Daily Market Report: 2026-06-28**\n\n### Executive Summary\n\nTCS.NS closed at 2094.70 on 2026-06-25, continuing its significant downward trend. The stock is trading well below its 50-day and 200-day simple moving averages, confirming a strong bearish market structure. Over the last three months, the stock has declined by 12.35%. Market sentiment is predominantly negative, with multiple reports highlighting sustained price drops, increased risk, and a lack of technical support.\n\n### Technical Analysis\n\n*   **Ticker:** TCS.NS\n*   **Closing Price:** 2094.70\n*   **Day's Range:** 2088.00 - 2148.50\n*   **Volume:** 4,738,903\n*   **SMA 50:** 2311.72\n*   **SMA 200:** 2794.18\n*   **RSI (14):** 36.61\n*   **3-Month Trend:** -12.35%\n*   **3-Month Max Drawdown:** -21.1%\n*   **20-Day Annualized Volatility:** 0.458\n\nThe price remains significantly below both the 50-day and 200-day SMAs, indicating a strong bearish trend. The RSI of 36.61 is approaching oversold territory.\n\n### Sentiment Analysis\n\nThe overall sentiment for TCS.NS is negative. Reports indicate the stock has fallen for five consecutive sessions and has declined over 10% in the past month. One source provides a \"negative evaluation,\" citing increased risk on falling prices and a lack of price support, suggesting the stock \"may perform very badly.\" While aggregate analyst ratings on TradingView are \"Neutral,\" the detailed price performance data across recent timeframes (1M: -9.20%, 1Y: -39.16%) supports a bearish outlook.\n\n***\n\nResearch only. Not financial advice.",
+    "skill_path": "/app/skills/financial-data-analyst/SKILL.md",
+    "tool_calls": [
+        {
+            "server": "sqlite",
+            "tool": "write_query",
+            "ok": true
+        },
+        {
+            "server": "sqlite",
+            "tool": "write_query",
+            "ok": true
+        },
+        {
+            "server": "sqlite",
+            "tool": "write_query",
+            "ok": true
+        },
+        {
+            "server": "finance",
+            "tool": "fetch_stock_history",
+            "ok": true
+        },
+        {
+            "server": "finance",
+            "tool": "calculate_technical_indicators",
+            "ok": true
+        },
+        {
+            "server": "finance",
+            "tool": "calculate_trend",
+            "ok": true
+        },
+        {
+            "server": "tavily",
+            "tool": "tavily_search",
+            "ok": true
+        },
+        {
+            "server": "sqlite",
+            "tool": "write_query",
+            "ok": true
+        },
+        {
+            "server": "sqlite",
+            "tool": "write_query",
+            "ok": true
+        },
+        {
+            "server": "sqlite",
+            "tool": "write_query",
+            "ok": true
+        },
+        {
+            "server": "filesystem",
+            "tool": "create_directory",
+            "ok": true
+        },
+        {
+            "server": "filesystem",
+            "tool": "write_file",
+            "ok": true
+        }
+    ],
+    "warnings": [],
+    "llm_used": true,
+    "graph_used": true
+}
