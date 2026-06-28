@@ -1,4 +1,10 @@
-fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
-mcp>=1.17.0
-pydantic>=2.7.0
+fastapi 
+uvicorn[standard] 
+mcp 
+pydantic 
+langchain 
+langgraph 
+langchain-google-genai
+google-auth  
+langchain-google-vertexai  
+google-cloud-aiplatform 

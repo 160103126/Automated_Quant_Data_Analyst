@@ -21,6 +21,8 @@ The app produces market analysis reports by orchestrating several MCP tools at r
 5. Call Filesystem MCP to write Markdown reports.
 6. Return a structured API response containing the report, saved path, tool calls, and warnings.
 
+The report workflow is orchestrated with LangGraph. Gemini on Vertex AI is used through LangChain for sentiment refinement and final analyst narrative generation. Deterministic MCP tools remain responsible for market data, technical indicators, persistence, and file writing.
+
 The app exposes this workflow as an HTTP API through FastAPI.
 
 ## Why The App Is Separate From MCP Servers
@@ -83,6 +85,11 @@ Important settings:
 | `DEFAULT_TREND_PERIOD` | `3mo` | Default period for trend calculations. |
 | `REPORT_DIRECTORY` | `/data/fs/reports` | Filesystem MCP container path for reports. |
 | `REPORT_TIMEZONE` | `Asia/Calcutta` | Date timezone for report titles and filenames. |
+| `ENABLE_LLM_REPORTING` | `true` | Enable LangGraph + Gemini report generation. |
+| `GOOGLE_CLOUD_PROJECT` | required for Docker | GCP project used for Vertex AI Gemini. |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | Vertex AI region. |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model used by LangChain. |
+| `LLM_TEMPERATURE` | `0.2` | Low temperature for stable analyst prose. |
 
 ### `market_analyst/mcp_client.py`
 
@@ -127,6 +134,26 @@ This is where the app turns a request into a report:
 4. Render Markdown.
 5. Save Markdown through Filesystem MCP.
 6. Return the full result.
+
+When `ENABLE_LLM_REPORTING=true`, the service runs the same steps through LangGraph and calls Gemini through LangChain after deterministic MCP data collection. If Gemini or Vertex AI authentication is unavailable, the app falls back to deterministic Markdown rendering and records a warning in the API response.
+
+### `market_analyst/graph.py`
+
+LangGraph workflow definition.
+
+Current nodes:
+
+- `load_runtime_skill`
+- `initialize_storage`
+- `collect_market_data`
+- `enhance_sentiment`
+- `persist_results`
+- `write_report`
+- `save_report`
+
+### `market_analyst/llm.py`
+
+Creates the Gemini chat model through `langchain-google-vertexai`. Authentication uses Google Application Default Credentials rather than an API key in this app.
 
 ### `market_analyst/models.py`
 
@@ -196,6 +223,19 @@ Invoke-RestMethod http://localhost:8000/status
 
 ## Run The Application With Docker
 
+Authenticate to GCP first on the host:
+
+```powershell
+gcloud auth application-default login
+gcloud config set project YOUR_GCP_PROJECT_ID
+```
+
+Set the project for Compose:
+
+```powershell
+$env:GOOGLE_CLOUD_PROJECT = "YOUR_GCP_PROJECT_ID"
+```
+
 From this folder:
 
 ```powershell
@@ -223,6 +263,12 @@ MCP_GATEWAY_URL=http://host.docker.internal:8000
 
 That points from the app container back to the host-published MCP gateway port.
 
+The Compose file mounts your local gcloud ADC folder into the app container read-only:
+
+```text
+%APPDATA%\gcloud -> /root/.config/gcloud
+```
+
 ## Run The Application Locally Without Docker
 
 From this folder:
@@ -232,6 +278,9 @@ cd C:\MachineLearning\Automated_Quant_Data_Analyst
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 $env:MCP_GATEWAY_URL = "http://localhost:8000"
+$env:GOOGLE_CLOUD_PROJECT = "YOUR_GCP_PROJECT_ID"
+$env:GOOGLE_CLOUD_LOCATION = "us-central1"
+$env:GEMINI_MODEL = "gemini-2.5-flash"
 uvicorn market_analyst.main:app --host 127.0.0.1 --port 8080
 ```
 
@@ -296,6 +345,8 @@ Response fields:
 | `skill_path` | Skill file loaded by the application runtime. |
 | `tool_calls` | MCP servers/tools called and whether each returned successfully. |
 | `warnings` | Non-fatal problems, such as unavailable sentiment search. |
+| `llm_used` | Whether Gemini contributed to sentiment/report generation. |
+| `graph_used` | Whether the LangGraph workflow path ran successfully. |
 
 ## Report Output Location
 
@@ -384,6 +435,11 @@ This pattern makes the skill deployable with the app. A future LLM-based report 
 | `DEFAULT_TREND_PERIOD` | `3mo` | `3mo` | Default trend period. |
 | `REPORT_DIRECTORY` | `/data/fs/reports` | `/data/fs/reports` | Path understood by filesystem MCP. |
 | `REPORT_TIMEZONE` | `Asia/Calcutta` | `Asia/Calcutta` | Date timezone for reports. |
+| `ENABLE_LLM_REPORTING` | `true` | `true` | Enable LangGraph + Gemini generation. |
+| `GOOGLE_CLOUD_PROJECT` | required | optional if ADC has a quota project | Vertex AI GCP project. |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | `us-central1` | Vertex AI region. |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | `gemini-2.5-flash` | Gemini model name. |
+| `LLM_TEMPERATURE` | `0.2` | `0.2` | Gemini temperature. |
 
 ## Important Boundary Rules
 

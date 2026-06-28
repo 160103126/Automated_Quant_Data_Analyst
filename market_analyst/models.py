@@ -16,3 +16,5 @@ class DailyReportResponse(BaseModel):
     skill_path: str
     tool_calls: list[dict]
     warnings: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    graph_used: bool = False

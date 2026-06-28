@@ -26,6 +26,7 @@ data/
 
 # Logs
 *.log
+*.json
 build*.log
 
 # Docker/local packaging artifacts

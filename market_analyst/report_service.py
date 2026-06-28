@@ -6,6 +6,8 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import Settings
+from .graph import build_market_report_graph
+from .llm import create_gemini_model
 from .mcp_client import McpGatewayClient
 from .skill_loader import load_skill
 
@@ -14,8 +16,65 @@ class MarketReportService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.mcp = McpGatewayClient(settings.mcp_gateway_url)
+        self._llm = None
 
     async def build_daily_report(
+        self,
+        tickers: list[str],
+        history_period: str,
+        trend_period: str,
+        interval: str,
+        persist: bool,
+        save_report: bool,
+    ) -> dict[str, Any]:
+        if self.settings.enable_llm_reporting:
+            try:
+                graph = build_market_report_graph(self)
+                state = await graph.ainvoke({
+                    "tickers": tickers,
+                    "history_period": history_period,
+                    "trend_period": trend_period,
+                    "interval": interval,
+                    "persist": persist,
+                    "save_report": save_report,
+                    "tool_calls": [],
+                    "warnings": [],
+                    "llm_used": False,
+                    "graph_used": True,
+                })
+                return {
+                    "report_path": state.get("report_path"),
+                    "markdown": state.get("markdown", ""),
+                    "skill_path": str(self.settings.skill_path),
+                    "tool_calls": state.get("tool_calls", []),
+                    "warnings": state.get("warnings", []),
+                    "llm_used": bool(state.get("llm_used")),
+                    "graph_used": True,
+                }
+            except Exception as exc:
+                fallback = await self._build_deterministic_report(
+                    tickers,
+                    history_period,
+                    trend_period,
+                    interval,
+                    persist,
+                    save_report,
+                )
+                fallback["warnings"].append(f"LangGraph/Gemini workflow unavailable; deterministic fallback used: {exc}")
+                fallback["graph_used"] = False
+                fallback["llm_used"] = False
+                return fallback
+
+        return await self._build_deterministic_report(
+            tickers,
+            history_period,
+            trend_period,
+            interval,
+            persist,
+            save_report,
+        )
+
+    async def _build_deterministic_report(
         self,
         tickers: list[str],
         history_period: str,
@@ -48,6 +107,8 @@ class MarketReportService:
             "skill_path": str(self.settings.skill_path),
             "tool_calls": tool_calls,
             "warnings": warnings,
+            "llm_used": False,
+            "graph_used": False,
         }
 
     async def _analyze_ticker(
@@ -157,7 +218,7 @@ class MarketReportService:
 
         await self._sqlite_statement(
             """
-            INSERT OR REPLACE INTO daily_prices (ticker, date, close_price, volume)
+            INSERT INTO daily_prices (ticker, date, close_price, volume)
             VALUES (:ticker, :date, :close_price, :volume)
             """,
             warnings,
@@ -166,7 +227,7 @@ class MarketReportService:
         )
         await self._sqlite_statement(
             """
-            INSERT OR REPLACE INTO technical_indicators
+            INSERT INTO technical_indicators
             (ticker, date, sma_50, sma_200, rsi, volatility_20d_annualized)
             VALUES (:ticker, :date, :sma_50, :sma_200, :rsi, :volatility)
             """,
@@ -183,7 +244,7 @@ class MarketReportService:
         )
         await self._sqlite_statement(
             """
-            INSERT OR REPLACE INTO market_sentiment (ticker, date, news_summary, sentiment_score)
+            INSERT INTO market_sentiment (ticker, date, news_summary, sentiment_score)
             VALUES (:ticker, :date, :summary, :score)
             """,
             warnings,
@@ -199,11 +260,20 @@ class MarketReportService:
         params: dict[str, Any] | None = None,
     ) -> None:
         candidates = ["write_query", "execute_query", "query"]
-        arguments_options = [{"query": statement, "params": params or {}}, {"sql": statement, "params": params or {}}]
+        if params:
+            for k, v in params.items():
+                if v is None:
+                    v = "NULL"
+                elif isinstance(v, str):
+                    v = f"'{v.replace(chr(39), chr(39)+chr(39))}'"
+                statement = statement.replace(f":{k}", str(v))
+        arguments_options = [{"query": statement}]
         last_error: Exception | None = None
         for arguments in arguments_options:
             try:
                 tool, result = await self.mcp.call_first_available("sqlite", candidates, arguments)
+                if self._has_error(result):
+                    raise RuntimeError(f"SQL Error: {result.get('error') or result}")
                 tool_calls.append({"server": "sqlite", "tool": tool, "ok": not self._has_error(result)})
                 return
             except Exception as exc:
@@ -268,7 +338,125 @@ class MarketReportService:
             "summary": text[:1200],
             "score": max(1, min(10, raw_score)),
             "sources": [],
+            "raw": result,
         }
+
+    async def _enhance_sentiment_with_llm(
+        self,
+        analyses: list[dict[str, Any]],
+        skill: str,
+        warnings: list[str],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        llm = self._get_llm(warnings)
+        if llm is None:
+            return analyses, False
+
+        prompt = (
+            "You are a market sentiment analyst. Use only the supplied market/news data. "
+            "Return strict JSON with this shape: "
+            "{\"sentiment\": [{\"ticker\": \"AAPL\", \"score\": 1-10, \"summary\": \"...\", \"sources\": [\"...\"]}]}.\n\n"
+            f"Runtime skill rules:\n{skill}\n\n"
+            f"Ticker analyses JSON:\n{json.dumps(self._compact_analyses_for_llm(analyses), default=str)}"
+        )
+        try:
+            content = await self._ainvoke_llm(llm, prompt)
+            parsed = self._extract_json_object(content)
+            sentiment_items = {item.get("ticker"): item for item in parsed.get("sentiment", []) if isinstance(item, dict)}
+            for analysis in analyses:
+                item = sentiment_items.get(analysis["ticker"])
+                if not item:
+                    continue
+                analysis["sentiment"] = {
+                    "summary": item.get("summary") or (analysis.get("sentiment") or {}).get("summary"),
+                    "score": item.get("score"),
+                    "sources": item.get("sources") or [],
+                    "raw": (analysis.get("sentiment") or {}).get("raw"),
+                }
+            return analyses, True
+        except Exception as exc:
+            warnings.append(f"Gemini sentiment enhancement unavailable: {exc}")
+            return analyses, False
+
+    async def _render_llm_markdown(
+        self,
+        analyses: list[dict[str, Any]],
+        skill: str,
+        warnings: list[str],
+    ) -> tuple[str, bool]:
+        llm = self._get_llm(warnings)
+        if llm is None:
+            return self._render_markdown(analyses, skill), False
+
+        prompt = (
+            "Write a concise professional daily market report in Markdown. "
+            "Use only the supplied data; do not invent prices, dates, indicators, sources, or causes. "
+            "Keep these exact sections in order: Executive Summary, Technical Analysis, Sentiment Analysis. "
+            "End with: 'Research only. Not financial advice.'\n\n"
+            f"Report date: {self._report_date()}\n\n"
+            f"Runtime skill rules:\n{skill}\n\n"
+            f"Analyses JSON:\n{json.dumps(self._compact_analyses_for_llm(analyses), default=str)}"
+        )
+        try:
+            markdown = await self._ainvoke_llm(llm, prompt)
+            markdown = markdown.strip()
+            if not markdown:
+                raise RuntimeError("Gemini returned an empty report")
+            return markdown, True
+        except Exception as exc:
+            warnings.append(f"Gemini report writer unavailable: {exc}")
+            return self._render_markdown(analyses, skill), False
+
+    def _get_llm(self, warnings: list[str]):
+        if not self.settings.enable_llm_reporting:
+            return None
+        if self._llm is not None:
+            return self._llm
+        try:
+            self._llm = create_gemini_model(self.settings)
+            return self._llm
+        except Exception as exc:
+            warnings.append(f"Gemini model initialization unavailable: {exc}")
+            return None
+
+    async def _ainvoke_llm(self, llm: Any, prompt: str) -> str:
+        response = await llm.ainvoke(prompt)
+        content = getattr(response, "content", response)
+        if isinstance(content, list):
+            return "\n".join(str(part.get("text", part)) if isinstance(part, dict) else str(part) for part in content)
+        return str(content)
+
+    def _extract_json_object(self, text: str) -> dict[str, Any]:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start >= 0 and end > start:
+                return json.loads(cleaned[start : end + 1])
+            raise
+
+    def _compact_analyses_for_llm(self, analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        for analysis in analyses:
+            sentiment = analysis.get("sentiment") or {}
+            compact.append({
+                "ticker": analysis.get("ticker"),
+                "latest": (analysis.get("history") or {}).get("latest"),
+                "indicators": analysis.get("indicators"),
+                "trend": analysis.get("trend"),
+                "sentiment": {
+                    "summary": sentiment.get("summary"),
+                    "score": sentiment.get("score"),
+                    "sources": sentiment.get("sources", []),
+                    "raw": sentiment.get("raw"),
+                },
+            })
+        return compact
 
     def _clean_text(self, text: str) -> str:
         replacements = {
